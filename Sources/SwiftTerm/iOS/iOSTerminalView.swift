@@ -99,7 +99,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var pendingDisplay: Bool = false
     var cellDimension: CellDimension!
     var caretView: CaretView!
-    var terminal: Terminal!
+    public private(set) var terminal: Terminal!
 
     var selection: SelectionService!
     var attrStrBuffer: CircularList<NSAttributedString>!

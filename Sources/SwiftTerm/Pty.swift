@@ -6,7 +6,7 @@
 //
 
 import Foundation
-#if !os(iOS) && !os(tvOS)
+#if targetEnvironment(macCatalyst) || os(OSX)
 
 /**
  * APIs to assist in controlling a Unix pseudo-terminal from Swift, it provides a wrapper for
