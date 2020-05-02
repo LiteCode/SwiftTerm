@@ -70,6 +70,8 @@ public class LocalProcessTerminalView: TerminalView, TerminalViewDelegate, Local
     {
         terminalDelegate = self
         process = LocalProcess (delegate: self)
+        
+        setupOptions()
     }
     
     /**
