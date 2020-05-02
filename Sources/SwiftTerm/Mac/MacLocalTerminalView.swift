@@ -66,7 +66,7 @@ public class LocalProcessTerminalView: TerminalView, TerminalViewDelegate, Local
         setup ()
     }
 
-    func setup ()
+    override func setup ()
     {
         terminalDelegate = self
         process = LocalProcess (delegate: self)
