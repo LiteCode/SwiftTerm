@@ -60,6 +60,11 @@ public class LocalProcessTerminalView: TerminalView, TerminalViewDelegate, Local
         setup ()
     }
     
+    public override init(frame: CGRect, options: TerminalView.Options) {
+        super.init(frame: frame, options: options)
+        setup()
+    }
+    
     public required init? (coder: NSCoder)
     {
         super.init (coder: coder)
