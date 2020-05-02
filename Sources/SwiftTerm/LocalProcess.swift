@@ -6,7 +6,7 @@
 //
 //  Created by Miguel de Icaza on 4/5/20.
 //
-#if !os(iOS)
+#if targetEnvironment(macCatalyst) || os(OSX)
 import Foundation
 
 
