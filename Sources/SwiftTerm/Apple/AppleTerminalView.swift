@@ -26,6 +26,9 @@ typealias TTRect = CGRect
 typealias TTBezierPath = NSBezierPath
 #endif
 
+public typealias TTImage = CGImage
+
+
 extension TerminalView {
     typealias CellDimension = CGSize
     
@@ -48,7 +51,8 @@ extension TerminalView {
             terminal.options = terminalOptions
             terminal.setup(isReset: false)
         }
-        
+        terminal.backgroundColor = Color.defaultBackground
+        terminal.foregroundColor = Color.defaultForeground
         attrStrBuffer = CircularList<NSAttributedString> (maxLength: terminal.buffer.lines.maxLength)
         attrStrBuffer.makeEmpty = makeEmptyLine
         fullBufferUpdate(terminal: terminal)
@@ -138,14 +142,14 @@ extension TerminalView {
     // Computes the font dimensions once font.normal has been set
     func computeFontDimensions () -> CellDimension
     {
-        let lineAscent = CTFontGetAscent (options.font.normal)
-        let lineDescent = CTFontGetDescent (options.font.normal)
-        let lineLeading = CTFontGetLeading (options.font.normal)
+        let lineAscent = CTFontGetAscent (font.normal)
+        let lineDescent = CTFontGetDescent (font.normal)
+        let lineLeading = CTFontGetLeading (font.normal)
         let cellHeight = ceil(lineAscent + lineDescent + lineLeading)
         #if os(macOS)
-        let cellWidth = options.font.normal.maximumAdvancement.width
+        let cellWidth = font.normal.maximumAdvancement.width
         #else
-        let fontAttributes = [NSAttributedString.Key.font: options.font.normal]
+        let fontAttributes = [NSAttributedString.Key.font: font.normal]
         let cellWidth = "W".size(withAttributes: fontAttributes).width
         #endif
         return CellDimension(width: cellWidth, height: cellHeight)
@@ -156,42 +160,79 @@ extension TerminalView {
         switch color {
         case .defaultColor:
             if isFg {
-                return options.colors.foregroundColor
+                return nativeForegroundColor
             } else {
-                return options.colors.backgroundColor
+                return nativeBackgroundColor
             }
         case .defaultInvertedColor:
             if isFg {
-                return options.colors.foregroundColor.inverseColor()
+                return nativeForegroundColor.inverseColor()
             } else {
-                return options.colors.backgroundColor.inverseColor()
+                return nativeBackgroundColor.inverseColor()
             }
         case .ansi256(let ansi):
-            if let c = colors [Int (ansi)] {
+            let midx = Int (ansi) + ((isBold && ansi < 248) ? 8: 0);
+            if let c = colors [midx] {
                 return c
             }
-            
-            let tcolor = Color.defaultAnsiColors [Int (ansi) + (isBold ? 8 : 0)]
-            
-            let newColor = TTColor.make (red: CGFloat (tcolor.red) / 255.0,
-                                         green: CGFloat (tcolor.green) / 255.0,
-                                         blue: CGFloat (tcolor.blue) / 255.0,
-                                         alpha: 1.0)
-            colors [Int(ansi)] = newColor
+            let tcolor = Color.ansiColors [midx]
+            let newColor = TTColor.make (color: tcolor)
+            colors [midx] = newColor
             return newColor
-            
         case .trueColor(let r, let g, let b):
             if let tc = trueColors [color] {
                 return tc
             }
-            let newColor = TTColor.make(red: CGFloat (r) / 255.0,
-                                        green: CGFloat (g) / 255.0,
-                                        blue: CGFloat (b) / 255.0,
+            let newColor = TTColor.make(red: CGFloat (r) / 65535.0,
+                                        green: CGFloat (g) / 65535.0,
+                                        blue: CGFloat (b) / 65535.0,
                                         alpha: 1.0)
             
             trueColors [color] = newColor
             return newColor
         }
+    }
+
+    // Clears the cached state for colors and triggers a full display
+    func colorsChanged ()
+    {
+        urlAttributes = [:]
+        attributes = [:]
+        terminal.updateFullScreen ()
+    }
+    
+    /// Installs the new colors as the default colors and recomputes the
+    /// current and ansi palette.   This installs both the colors into the terminal
+    /// engine and updates the UI accordingly.
+    /// 
+    /// - Parameter colors: this should be an array of 16 values that correspond to the 16 ANSI colors,
+    /// if the array does not contain 16 elements, it will not do anything
+    public func installColors (_ colors: [Color])
+    {
+        Color.installPalette(colors: colors)
+        self.colorsChanged()
+    }
+    
+    public func colorChanged (source: Terminal, idx: Int?)
+    {
+        if let index = idx {
+            colors [index] = nil
+        } else {
+            colors = Array(repeating: nil, count: 256)
+        }
+        colorsChanged ()
+    }
+
+    public func setBackgroundColor(source: Terminal, color: Color) {
+        // Can not implement this until I change the color to not be this struct
+        nativeBackgroundColor = TTColor.make (color: color)
+        colorsChanged()
+    }
+    
+    public   
+    func setForegroundColor(source: Terminal, color: Color) {
+        nativeForegroundColor = TTColor.make (color: color)
+        colorsChanged()
     }
     
     //
@@ -218,23 +259,23 @@ extension TerminalView {
             return result
         }
         
-        var font: TTFont
+        var tf: TTFont
         let isBold = flags.contains(.bold)
         if isBold {
             if flags.contains (.italic) {
-                font = options.font.boldItalic
+                tf = font.boldItalic
             } else {
-                font = options.font.bold
+                tf = font.bold
             }
         } else if flags.contains (.italic) {
-            font = options.font.italic
+            tf = font.italic
         } else {
-            font = options.font.normal
+            tf = font.normal
         }
         
         let fgColor = mapColor (color: fg, isFg: true, isBold: isBold)
         var nsattr: [NSAttributedString.Key:Any] = [
-            .font: font,
+            .font: tf,
             .foregroundColor: fgColor,
             .backgroundColor: mapColor(color: bg, isFg: false, isBold: false)
         ]
@@ -362,14 +403,14 @@ extension TerminalView {
         if attributes.keys.contains(.underlineStyle) {
             // draw underline at font.normal.underlinePosition baseline
             let underlineStyle = NSUnderlineStyle(rawValue: attributes[.underlineStyle] as? NSUnderlineStyle.RawValue ?? 0)
-            let underlineColor = attributes[.underlineColor] as? TTColor ?? options.colors.foregroundColor
-            let underlinePosition = options.font.underlinePosition ()
+            let underlineColor = attributes[.underlineColor] as? TTColor ?? nativeForegroundColor
+            let underlinePosition = font.underlinePosition ()
 
             // draw line at the baseline
             currentContext.setShouldAntialias(false)
             currentContext.setStrokeColor(underlineColor.cgColor)
 
-            let underlineThickness = max(round(scale * options.font.underlineThickness ()) / scale, 0.5)
+            let underlineThickness = max(round(scale * font.underlineThickness ()) / scale, 0.5)
             for p in positions {
                 switch underlineStyle {
                 case let style where style.contains(.single):
@@ -418,8 +459,8 @@ extension TerminalView {
     // TODO: this should not render any lines outside the dirtyRect
     func drawTerminalContents (dirtyRect: TTRect, context: CGContext)
     {
-        let lineDescent = CTFontGetDescent(options.font.normal)
-        let lineLeading = CTFontGetLeading(options.font.normal)
+        let lineDescent = CTFontGetDescent(font.normal)
+        let lineLeading = CTFontGetLeading(font.normal)
 
         // draw lines
         for row in terminal.buffer.yDisp..<terminal.rows + terminal.buffer.yDisp {
@@ -467,7 +508,7 @@ extension TerminalView {
                     context.restoreGState()
                 }
 
-                options.colors.foregroundColor.set()
+                nativeForegroundColor.set()
 
                 if runAttributes.keys.contains(.foregroundColor) {
                     let color = runAttributes[.foregroundColor] as! TTColor
@@ -556,7 +597,7 @@ extension TerminalView {
         if vy >= buffer.yDisp + buffer.rows {
             caretView.removeFromSuperview()
             return
-        } else {
+        } else if terminal.cursorHidden == false {
             addSubview(caretView)
         }
         
@@ -599,6 +640,40 @@ extension TerminalView {
         }
     }
     
+    ///
+    /// This takes a string returned by events (NSEvent or UIKey) as the 'charactersIngoringModifiers'
+    /// and returns the control-version of that, and only applies to a handful of characters
+    ///
+    func applyControlToEventCharacters (_ ch: String) -> [UInt8]
+    {
+        let arr = [UInt8](ch.utf8)
+        if arr.count == 1 {
+            let ch = Character (UnicodeScalar (arr [0]))
+            var value: UInt8
+            switch ch {
+            case "A"..."Z":
+                value = (ch.asciiValue! - 0x40 /* - 'A' + 1 */)
+            case "a"..."z":
+                value = (ch.asciiValue! - 0x60 /* - 'a' + 1 */)
+            case "\\":
+                value = 0x1c
+            case "_":
+                value = 0x1f
+            case "]":
+                value = 0x1d
+            case "[":
+                value = 0x1b
+            case "^":
+                value = 0x1e
+            case " ":
+                value = 0
+            default:
+                return []
+            }
+            return [value]
+        }
+        return []
+    }
     /**
      * Returns the thumb size in proportion to the visible content of the entire content, alternate buffers are not scrollable, so this returns 0
      */
@@ -771,6 +846,40 @@ extension TerminalView {
      */
     public func send (_ bytes: [UInt8]) {
         send (data: (bytes)[...])
+    }
+    
+    open func showCursor(source: Terminal) {
+        if caretView.superview == nil {
+            addSubview(caretView)
+        }
+    }
+
+    open func hideCursor(source: Terminal) {
+        caretView.removeFromSuperview()
+    }
+    
+    open func bell(source: Terminal) {
+        terminalDelegate?.bell (source: self)
+    }
+
+    func sendKeyUp ()
+    {
+        send (terminal.applicationCursor ? EscapeSequences.MoveUpApp : EscapeSequences.MoveUpNormal)
+    }
+    
+    func sendKeyDown ()
+    {
+        send (terminal.applicationCursor ? EscapeSequences.MoveDownApp : EscapeSequences.MoveDownNormal)
+    }
+    
+    func sendKeyLeft()
+    {
+        send (terminal.applicationCursor ? EscapeSequences.MoveLeftApp : EscapeSequences.MoveLeftNormal)
+    }
+    
+    func sendKeyRight ()
+    {
+        send (terminal.applicationCursor ? EscapeSequences.MoveRightApp : EscapeSequences.MoveRightNormal)
     }
 }
 #endif

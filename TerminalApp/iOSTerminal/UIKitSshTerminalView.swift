@@ -15,11 +15,13 @@ import SwiftSH
 public class SshTerminalView: TerminalView, TerminalViewDelegate {
     var shell: SSHShell?
     var authenticationChallenge: AuthenticationChallenge?
+    var sshQueue: DispatchQueue
     
     public override init (frame: CGRect)
     {
+        sshQueue = DispatchQueue.global(qos: .background)
         super.init (frame: frame)
-        delegate = self
+        terminalDelegate = self
         do {
             
             authenticationChallenge = .byPassword(username: "miguel", password: try String (contentsOfFile: "/Users/miguel/password"))
@@ -28,22 +30,52 @@ public class SshTerminalView: TerminalView, TerminalViewDelegate {
                                   port: 22,
                                   environment: [Environment(name: "LANG", variable: "en_US.UTF-8")],
                                   terminal: "xterm-256color")
-            connect()
+            shell?.log.enabled = false
+            shell?.setCallbackQueue(queue: sshQueue)
+            sshQueue.async {
+                self.connect ()
+            }
         } catch {
             
         }
     }
-    
+  
     func connect()
     {
-        
         if let s = shell {
             s.withCallback { [unowned self] (data: Data?, error: Data?) in
                 if let d = data {
-                    DispatchQueue.main.async {
-                        let slice = Array(d) [0...]
-                        self.feed(byteArray: slice)
+                    let sliced = Array(d) [0...]
+     
+                    // The first code causes problems, because the SSH library
+                    // accumulates data, rather that sending it as it comes,
+                    // so it can deliver blocks of 300k to 2megs of data
+                    // which as far as the user is concerned, nothing happens
+                    // while the terminal parsers proceses this.
+                    //
+                    // The solution was below, and it fed the data in chunks
+                    // to the UI, but this caused the UI to not update chunks
+                    // of the screen, for reasons that I do not understand yet.
+                    #if true
+                    DispatchQueue.main.sync {
+                        self.feed(byteArray: sliced)
                     }
+                    #else
+                    let blocksize = 1024
+                    var next = 0
+                    let last = sliced.endIndex
+                    
+                    while next < last {
+                        
+                        let end = min (next+blocksize, last)
+                        let chunk = sliced [next..<end]
+                    
+                        DispatchQueue.main.sync {
+                            self.feed(byteArray: chunk)
+                        }
+                        next = end
+                    }
+                    #endif
                 }
             }
             .connect()
@@ -81,7 +113,9 @@ public class SshTerminalView: TerminalView, TerminalViewDelegate {
     public func send(source: TerminalView, data: ArraySlice<UInt8>) {
         
         shell?.write(Data (data)) { err in
-            print ("Error sending")
+            if let e = err {
+                print ("Error sending \(e)")
+            }
         }
     }
     

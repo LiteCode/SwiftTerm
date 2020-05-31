@@ -350,6 +350,21 @@ class EscapeSequenceParser {
         printStateReset()
     }
 
+    var logFileCounter = 1
+    func dump (_ data: ArraySlice<UInt8>)
+    {
+        let dir = "/tmp"
+        let path = dir + "/log-\(logFileCounter)"
+        do {
+            let dataCopy = Data (data)
+            try dataCopy.write(to: URL.init(fileURLWithPath: path))
+            logFileCounter += 1
+        } catch {
+            // Ignore write error
+            //print ("Got error while logging data dump to \(path)")
+        }
+    }
+    
     func parse (data: ArraySlice<UInt8>)
     {
         var code : UInt8 = 0
@@ -363,8 +378,10 @@ class EscapeSequenceParser {
         var pars = self._pars
         var dcsHandler = activeDcsHandler
         
+        //dump (data)
+            
         // process input string
-        var i = 0
+        var i = data.startIndex
         let len = data.count
         while i < len {
             code = data [i]
@@ -545,10 +562,10 @@ class EscapeSequenceParser {
                     let semiColonAscii = 59 // ';'
                     
                     if let idx = osc.firstIndex (of: UInt8(semiColonAscii)){
-                        oscCode = parseInt (osc [0..<idx])
+                        oscCode = EscapeSequenceParser.parseInt (osc [0..<idx])
                         content = osc [(idx+1)...]
                     } else {
-                        oscCode = parseInt (osc[0...])
+                        oscCode = EscapeSequenceParser.parseInt (osc[0...])
                         content = []
                     }
                     if let handler = oscHandlers [oscCode] {
@@ -589,7 +606,7 @@ class EscapeSequenceParser {
         self.currentState = currentState
     }
     
-    func parseInt (_ str: ArraySlice<UInt8>) -> Int
+    static func parseInt (_ str: ArraySlice<UInt8>) -> Int
     {
         var result = 0
         for x in str {

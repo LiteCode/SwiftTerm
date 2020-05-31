@@ -31,70 +31,42 @@ import CoreGraphics
  *
  * Call the `getTerminal` method to get a reference to the underlying `Terminal` that backs this
  * view.
+ *
+ * Use the `configureNativeColors()` to set the defaults colors for the view to match the OS
+ * defaults, otherwise, this uses its own set of defaults colors.
  */
 open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
-    // User facing, customizable view options
-    public struct Options {
+    public struct Font {
+        public let normal: NSFont
+        let bold: NSFont
+        let italic: NSFont
+        let boldItalic: NSFont
         
-        public struct Font {
-            public let normal: NSFont
-            let bold: NSFont
-            let italic: NSFont
-            let boldItalic: NSFont
-            
-            static var defaultFont: NSFont {
-                if #available(OSX 10.15, *)  {
-                    return NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-                } else {
-                    return NSFont(name: "Menlo Regular", size: NSFont.systemFontSize) ?? NSFont(name: "Courier", size: NSFont.systemFontSize)!
-                }
+        static var defaultFont: NSFont {
+            if #available(OSX 10.15, *)  {
+                return NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            } else {
+                return NSFont(name: "Menlo Regular", size: NSFont.systemFontSize) ?? NSFont(name: "Courier", size: NSFont.systemFontSize)!
             }
-            
-            public init(font baseFont: NSFont, fontSize: CGFloat? = nil) {
-                self.normal = baseFont
-                self.bold = NSFontManager.shared.convert(baseFont, toHaveTrait: [.boldFontMask])
-                self.italic = NSFontManager.shared.convert(baseFont, toHaveTrait: [.italicFontMask])
-                self.boldItalic = NSFontManager.shared.convert(baseFont, toHaveTrait: [.italicFontMask, .boldFontMask])
-            }
+        }
+        
+        public init(font baseFont: NSFont, fontSize: CGFloat? = nil) {
+            self.normal = baseFont
+            self.bold = NSFontManager.shared.convert(baseFont, toHaveTrait: [.boldFontMask])
+            self.italic = NSFontManager.shared.convert(baseFont, toHaveTrait: [.italicFontMask])
+            self.boldItalic = NSFontManager.shared.convert(baseFont, toHaveTrait: [.italicFontMask, .boldFontMask])
+        }
 
-            // Expected by the shared rendering code
-            func underlinePosition () -> CGFloat
-            {
-                return normal.underlinePosition
-            }
+        // Expected by the shared rendering code
+        func underlinePosition () -> CGFloat
+        {
+            return normal.underlinePosition
+        }
 
-            // Expected by the shared rendering code
-            func underlineThickness () -> CGFloat
-            {
-                return normal.underlineThickness
-            }
-        }
-        
-        public struct Colors {
-            public let useSystemColors: Bool
-            public let foregroundColor: NSColor
-            public let backgroundColor: NSColor
-            
-            public init(useSystemColors: Bool) {
-                self.useSystemColors = useSystemColors
-                self.foregroundColor = useSystemColors ? NSColor.textColor : NSColor(calibratedRed: 0.54, green: 0.54, blue: 0.54, alpha: 1)
-                self.backgroundColor = useSystemColors ? NSColor.textBackgroundColor : NSColor.black
-            }
-        }
-        
-        public let font: Font
-        public let colors: Colors
-        public static let `default` = Options(font: Font(font: Font.defaultFont), colors: Colors(useSystemColors: false))
-        
-        public init(font: Font, colors: Colors) {
-            self.font = font
-            self.colors = colors
-        }
-    }
-    
-    public private(set) var options: Options {
-        didSet {
-            self.setupOptions()
+        // Expected by the shared rendering code
+        func underlineThickness () -> CGFloat
+        {
+            return normal.underlineThickness
         }
     }
     
@@ -124,23 +96,30 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     // Cache for the colors in the 0..255 range
     var colors: [NSColor?] = Array(repeating: nil, count: 256)
     var trueColors: [Attribute.Color:NSColor] = [:]
+    var transparent = TTColor.transparent ()
     
-    public init(frame: CGRect, options: Options) {
-        self.options = options
+    /// This font structure represents the font to be used for the terminal
+    public var font: Font {
+        didSet { setupOptions() }
+    }
+    
+    public init(frame: CGRect, font: NSFont?) {
+        self.font = Font (font: font ?? Font.defaultFont)
+
         super.init (frame: frame)
         setup()
     }
     
     public override init (frame: CGRect)
     {
-        self.options = Options.default
+        self.font = Font (font: Font.defaultFont)
         super.init (frame: frame)
         setup()
     }
     
     public required init? (coder: NSCoder)
     {
-        self.options = Options.default
+        self.font = Font (font: Font.defaultFont)
         super.init (coder: coder)
         setup()
     }
@@ -155,10 +134,44 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     
     func setupOptions ()
     {
-        layer?.backgroundColor = options.colors.backgroundColor.cgColor
         setupOptions (width: getEffectiveWidth (rect: bounds), height: bounds.height)
+        layer?.backgroundColor = nativeBackgroundColor.cgColor
     }
-      
+
+    var _nativeFg, _nativeBg: TTColor!
+    var settingFg = false, settingBg = false
+    /**
+     * This will set the native foreground color to the specified native color (UIColor or NSColor)
+     * and will have this reflected into the underlying's terminal `foregroundColor` and
+     * `backgroundColor`
+     */
+    public var nativeForegroundColor: NSColor {
+        get { _nativeFg }
+        set {
+            if settingFg { return }
+            settingFg = true
+            _nativeFg = newValue
+            terminal.foregroundColor = nativeForegroundColor.getTerminalColor ()
+            settingFg = false
+        }
+    }
+
+    /**
+     * This will set the native foreground color to the specified native color (UIColor or NSColor)
+     * and will have this reflected into the underlying's terminal `foregroundColor` and
+     * `backgroundColor`
+     */
+    public var nativeBackgroundColor: NSColor {
+        get { _nativeBg }
+        set {
+            if settingBg { return }
+            settingBg = true
+            _nativeBg = newValue
+            terminal.backgroundColor = nativeBackgroundColor.getTerminalColor ()
+            settingBg = false
+        }
+    }
+    
     func backingScaleFactor () -> CGFloat
     {
         window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
@@ -204,8 +217,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
         scroller.target = self
     }
     
-    open func bell(source: Terminal) {
-        NSSound.beep()
+    /// This method sents the `nativeForegroundColor` and `nativeBackgroundColor`
+    /// to match macOS default colors for text and its background.
+    public func configureNativeColors ()
+    {
+        self.nativeForegroundColor = NSColor.textColor
+        self.nativeBackgroundColor = NSColor.textBackgroundColor
+
     }
     
     open func bufferActivated(source: Terminal) {
@@ -215,7 +233,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     open func send(source: Terminal, data: ArraySlice<UInt8>) {
         terminalDelegate?.send (source: self, data: data)
     }
-    
+        
     /**
      * Given the current set of columns and rows returns a frame that would host this control.
      */
@@ -449,33 +467,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
         } else if eventFlags.contains (.control) {
             // Sends the control sequence
             if let ch = event.charactersIgnoringModifiers {
-                let arr = [UInt8](ch.utf8)
-                if arr.count == 1 {
-                    let ch = Character (UnicodeScalar (arr [0]))
-                    var value: UInt8
-                    switch ch {
-                    case "A"..."Z":
-                        value = (ch.asciiValue! - 0x40 /* - 'A' + 1 */)
-                    case "a"..."z":
-                        value = (ch.asciiValue! - 0x60 /* - 'a' + 1 */)
-                    case "\\":
-                        value = 0x1c
-                    case "_":
-                        value = 0x1f
-                    case "]":
-                        value = 0x1d
-                    case "[":
-                        value = 0x1b
-                    case "^":
-                        value = 0x1e
-                    case " ":
-                        value = 0
-                    default:
-                        return
-                    }
-                    send ([value])
-                    return
-                }
+                send (applyControlToEventCharacters (ch))
+                return
             }
         } else if eventFlags.contains (.function) {
             if let str = event.charactersIgnoringModifiers {
@@ -540,13 +533,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
         case #selector(deleteBackward(_:)):
             send ([0x7f])
         case #selector(moveUp(_:)):
-            send (terminal.applicationCursor ? EscapeSequences.MoveUpApp : EscapeSequences.MoveUpNormal)
+            sendKeyUp()
         case #selector(moveDown(_:)):
-            send (terminal.applicationCursor ? EscapeSequences.MoveDownApp : EscapeSequences.MoveDownNormal)
+            sendKeyDown()
         case #selector(moveLeft(_:)):
-            send (terminal.applicationCursor ? EscapeSequences.MoveLeftApp : EscapeSequences.MoveLeftNormal)
+            sendKeyLeft()
         case #selector(moveRight(_:)):
-            send (terminal.applicationCursor ? EscapeSequences.MoveRightApp : EscapeSequences.MoveRightNormal)
+            sendKeyRight()
         case #selector(insertTab(_:)):
             send (EscapeSequences.CmdTab)
         case #selector(insertBacktab(_:)):
@@ -904,8 +897,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
                 }
                 nup.isBezeled = false
                 nup.font = tryUrlFont ()
-                nup.backgroundColor = options.colors.foregroundColor
-                nup.textColor = options.colors.backgroundColor
+                nup.backgroundColor = nativeForegroundColor
+                nup.textColor = nativeBackgroundColor
                 nup.sizeToFit()
                 nup.frame = CGRect (x: 0, y: 0, width: nup.frame.width, height: nup.frame.height)
                 addSubview(nup)
@@ -968,13 +961,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations {
     
     public func resetFontSize ()
     {
-        options = Options.`default`
+        font = Font (font: Font.defaultFont)
     }
     
     let fontScale = [9, 10, 11, 13, 14, 18, 24, 36, 48, 64, 72, 96, 144, 288]
     public func biggerFontSize ()
     {
-        let current = options.font.normal.pointSize
+        let current = font.normal.pointSize
         for x in fontScale {
             if current < CGFloat (x) {
                 // Set the font size here
@@ -1003,10 +996,6 @@ extension TerminalView: TerminalDelegate {
         }
     }
     
-    open func showCursor(source: Terminal) {
-        //
-    }
-    
     open func setTerminalTitle(source: Terminal, title: String) {
         terminalDelegate?.setTerminalTitle(source: self, title: title)
     }
@@ -1028,6 +1017,15 @@ extension TerminalView: TerminalDelegate {
 }
 
 extension NSColor {
+    func getTerminalColor () -> Color {
+        guard let color = self.usingColorSpace(.deviceRGB) else {
+            return Color.defaultForeground
+        }
+        
+        var red: CGFloat = 0.0, green: CGFloat = 0.0, blue: CGFloat = 0.0, alpha: CGFloat = 1.0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return Color(red: UInt16(red*65535), green: UInt16(green*65535), blue: UInt16(blue*65535))
+    }
     func inverseColor() -> NSColor {
         guard let color = self.usingColorSpace(.deviceRGB) else {
             return self
@@ -1041,6 +1039,27 @@ extension NSColor {
     static func make (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> NSColor
     {
         return NSColor (deviceRed: red, green: green, blue: blue, alpha: alpha)
+    }
+    
+    static func make (hue: CGFloat, saturation: CGFloat, brightness: CGFloat, alpha: CGFloat) -> TTColor
+    {
+        return NSColor (
+            calibratedHue: hue,
+            saturation: saturation,
+            brightness: brightness,
+            alpha: alpha)
+    }
+
+    static func make (color: Color) -> NSColor
+    {
+        return NSColor (deviceRed: CGFloat (color.red) / 65535.0,
+                        green: CGFloat (color.green) / 65535.0,
+                        blue: CGFloat (color.blue) / 65535.0,
+                        alpha: 1.0)
+    }
+    
+    static func transparent () -> NSColor {
+        return NSColor (calibratedWhite: 0, alpha: 0)
     }
 }
 
@@ -1056,6 +1075,11 @@ extension TerminalViewDelegate {
                 }
             }
         }
+    }
+    
+    public func bell (source: TerminalView)
+    {
+        NSSound.beep()
     }
 }
 

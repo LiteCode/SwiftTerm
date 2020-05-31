@@ -25,66 +25,41 @@ import CoreGraphics
  *
  * Users are notified of interesting events in their implementation of the `TerminalViewDelegate`
  * methods - an instance must be provided to the constructor of `TerminalView`.
+ *
+ * Call the `getTerminal` method to get a reference to the underlying `Terminal` that backs this
+ * view.
+ *
+ * Use the `configureNativeColors()` to set the defaults colors for the view to match the OS
+ * defaults, otherwise, this uses its own set of defaults colors.
  */
 open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollViewDelegate {
-    // User facing, customizable view options
-    public struct Options {
+    public struct Font {
+        public let normal: UIFont
+        let bold: UIFont
+        let italic: UIFont
+        let boldItalic: UIFont
         
-        public struct Font {
-            public let normal: UIFont
-            let bold: UIFont
-            let italic: UIFont
-            let boldItalic: UIFont
-            
-            static var defaultFont: UIFont {
-                UIFont.monospacedSystemFont (ofSize: 12, weight: .regular)
-            }
-            
-            public init(font baseFont: UIFont) {
-                self.normal = baseFont
-                self.bold = UIFont (descriptor: baseFont.fontDescriptor.withSymbolicTraits ([.traitBold])!, size: 0)
-                self.italic = UIFont (descriptor: baseFont.fontDescriptor.withSymbolicTraits ([.traitItalic])!, size: 0)
-                self.boldItalic = UIFont (descriptor: baseFont.fontDescriptor.withSymbolicTraits ([.traitItalic, .traitBold])!, size: 0)
-            }
-            
-            // Expected by the shared rendering code
-            func underlinePosition () -> CGFloat
-            {
-                return -1.2
-            }
-            
-            // Expected by the shared rendering code
-            func underlineThickness () -> CGFloat
-            {
-                return 0.63
-            }
+        static var defaultFont: UIFont {
+            UIFont.monospacedSystemFont (ofSize: 12, weight: .regular)
         }
         
-        public struct Colors {
-            public let useSystemColors: Bool
-            public let foregroundColor: UIColor
-            public let backgroundColor: UIColor
-            
-            public init(useSystemColors: Bool) {
-                self.useSystemColors = useSystemColors
-                self.foregroundColor = UIColor.gray
-                self.backgroundColor = UIColor.black
-            }
+        public init(font baseFont: UIFont) {
+            self.normal = baseFont
+            self.bold = UIFont (descriptor: baseFont.fontDescriptor.withSymbolicTraits ([.traitBold])!, size: 0)
+            self.italic = UIFont (descriptor: baseFont.fontDescriptor.withSymbolicTraits ([.traitItalic])!, size: 0)
+            self.boldItalic = UIFont (descriptor: baseFont.fontDescriptor.withSymbolicTraits ([.traitItalic, .traitBold])!, size: 0)
         }
         
-        public let font: Font
-        public let colors: Colors
-        public static let `default` = Options(font: Font(font: Font.defaultFont), colors: Colors(useSystemColors: false))
-        
-        public init(font: Font, colors: Colors) {
-            self.font = font
-            self.colors = colors
+        // Expected by the shared rendering code
+        func underlinePosition () -> CGFloat
+        {
+            return -1.2
         }
-    }
-    
-    public private(set) var options: Options {
-        didSet {
-            self.setupOptions()
+        
+        // Expected by the shared rendering code
+        func underlineThickness () -> CGFloat
+        {
+            return 0.63
         }
     }
     
@@ -100,7 +75,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     var cellDimension: CellDimension!
     var caretView: CaretView!
     var terminal: Terminal!
-
+    var allowMouseReporting = true
     var selection: SelectionService!
     var attrStrBuffer: CircularList<NSAttributedString>!
     
@@ -112,46 +87,266 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     // Cache for the colors in the 0..255 range
     var colors: [UIColor?] = Array(repeating: nil, count: 256)
     var trueColors: [Attribute.Color:UIColor] = [:]
+    var transparent = TTColor.transparent ()
     
-    public init(frame: CGRect, options: Options) {
-        self.options = options
+    /// This font structure represents the font to be used for the terminal
+    public var font: Font {
+        didSet {
+            setupOptions()
+        }
+    }
+    
+    public init(frame: CGRect, font: UIFont?) {
+        self.font = Font (font: font ?? Font.defaultFont)
         super.init (frame: frame)
         setup()
     }
     
     public override init (frame: CGRect)
     {
-        self.options = Options.default
-
+        self.font = Font (font: Font.defaultFont)
         super.init (frame: frame)
         setup()
     }
     
     public required init? (coder: NSCoder)
     {
-        self.options = Options.default
+        self.font = Font (font: Font.defaultFont)
         super.init (coder: coder)
         setup()
     }
-    
+        
     func setup()
     {
         setupOptions ()
+        setupGestures ()
+        setupAccessoryView ()
+    }
+    
+    @objc func pasteCmd(_ sender: Any?) {
+        if let s = UIPasteboard.general.string {
+            send(txt: s)
+            queuePendingDisplay()
+        }
+        
+    }
+    
+    @objc func resetCmd(_ sender: Any?) {
+        terminal.cmdReset()
+        queuePendingDisplay()
+    }
+    
+    @objc func longPress (_ gestureRecognizer: UILongPressGestureRecognizer)
+    {
+         if gestureRecognizer.state == .began {
+            self.becomeFirstResponder()
+            //self.viewForReset = gestureRecognizer.view
+
+            var items: [UIMenuItem] = []
+            
+            if UIPasteboard.general.hasStrings {
+                items.append(UIMenuItem(title: "Paste", action: #selector(pasteCmd)))
+            }
+            items.append (UIMenuItem(title: "Reset", action: #selector(resetCmd)))
+            
+            // Configure the shared menu controller
+            let menuController = UIMenuController.shared
+            menuController.menuItems = items
+            
+            // TODO:
+            //  - If nothing is selected, offer Select, Select All
+            //  - If something is selected, offer copy, look up, share, "Search on StackOverflow"
+
+            // Set the location of the menu in the view.
+            let location = gestureRecognizer.location(in: gestureRecognizer.view)
+            let menuLocation = CGRect(x: location.x, y: location.y, width: 0, height: 0)
+            //menuController.setTargetRect(menuLocation, in: gestureRecognizer.view!)
+            menuController.showMenu(from: gestureRecognizer.view!, rect: menuLocation)
+            
+          }
+    }
+    
+    func calculateTapHit (gesture: UIGestureRecognizer) -> Position
+    {
+        let point = gesture.location(in: self)
+        let col = Int (point.x / cellDimension.width)
+        let row = Int (point.y / cellDimension.height)
+        if row < 0 {
+            return Position(col: 0, row: 0)
+        }
+        return Position(col: min (max (0, col), terminal.cols-1), row: min (row, terminal.rows-1))
+    }
+
+    func encodeFlags (release: Bool) -> Int
+    {
+        let encodedFlags = terminal.encodeButton(
+            button: 1,
+            release: release,
+            shift: false,
+            meta: false,
+            control: terminalAccessory?.controlModifier ?? false)
+        terminalAccessory?.controlModifier = false
+        return encodedFlags
+    }
+    
+    func sharedMouseEvent (gestureRecognizer: UIGestureRecognizer, release: Bool)
+    {
+        let hit = calculateTapHit(gesture: gestureRecognizer)
+        terminal.sendEvent(buttonFlags: encodeFlags (release: release), x: hit.col, y: hit.row)
+    }
+    
+    @objc func singleTap (_ gestureRecognizer: UITapGestureRecognizer)
+    {
+        guard gestureRecognizer.view != nil else { return }
+             
+        if gestureRecognizer.state != .ended {
+            return
+        }
+     
+        if allowMouseReporting && terminal.mouseMode.sendButtonPress() {
+            sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: false)
+
+            if terminal.mouseMode.sendButtonRelease() {
+                sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: true)
+            }
+            return
+        }
+    }
+    
+    @objc func doubleTap (_ gestureRecognizer: UITapGestureRecognizer)
+    {
+        guard gestureRecognizer.view != nil else { return }
+               
+        if gestureRecognizer.state != .ended {
+            return
+        }
+        
+        if allowMouseReporting && terminal.mouseMode.sendButtonPress() {
+            sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: false)
+            
+            if terminal.mouseMode.sendButtonRelease() {
+                sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: true)
+            }
+            return
+        } else {
+            // endEditing(true)
+        }
+    }
+    
+    @objc func pan (_ gestureRecognizer: UIPanGestureRecognizer)
+    {
+        guard gestureRecognizer.view != nil else { return }
+        if allowMouseReporting {
+            switch gestureRecognizer.state {
+            case .began:
+                // send the initial tap
+                if terminal.mouseMode.sendButtonPress() {
+                    sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: false)
+                }
+            case .ended, .cancelled:
+                if terminal.mouseMode.sendButtonRelease() {
+                    sharedMouseEvent(gestureRecognizer: gestureRecognizer, release: true)
+                }
+            case .changed:
+                if terminal.mouseMode.sendButtonTracking() {
+                    let hit = calculateTapHit(gesture: gestureRecognizer)
+                    terminal.sendMotion(buttonFlags: encodeFlags(release: false), x: hit.col, y: hit.row)
+                }
+            default:
+                break
+            }
+        }
+    }
+    
+    func setupGestures ()
+    {
+        let longPress = UILongPressGestureRecognizer (target: self, action: #selector(longPress(_:)))
+        longPress.minimumPressDuration = 0.7
+        addGestureRecognizer(longPress)
+        
+        let singleTap = UITapGestureRecognizer (target: self, action: #selector(singleTap(_:)))
+        addGestureRecognizer(singleTap)
+        
+        let doubleTap = UITapGestureRecognizer (target: self, action: #selector(doubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        addGestureRecognizer(doubleTap)
+        
+        let pan = UIPanGestureRecognizer (target: self, action: #selector(pan(_:)))
+        addGestureRecognizer(pan)
+    }
+
+    var _inputAccessory: UIView?
+    
+    ///
+    /// You can set this property to a UIView to be your input accessory, by default
+    /// this is an instance of `TerminalAccessory`
+    ///
+    public override var inputAccessoryView: UIView? {
+        get { _inputAccessory }
+        set {
+            _inputAccessory = newValue
+        }
+    }
+    
+    /// Returns the inputaccessory in case it is a TerminalAccessory and we can use it
+    var terminalAccessory: TerminalAccessory? {
+        get {
+            _inputAccessory as? TerminalAccessory
+        }
+    }
+
+    func setupAccessoryView ()
+    {
+        let ta = TerminalAccessory(frame: CGRect(x: 0, y: 0, width: frame.width, height: 36),
+                                              inputViewStyle: .keyboard)
+        ta.terminalView = self
+        inputAccessoryView = ta
     }
     
     func setupOptions ()
     {
-        layer.backgroundColor = options.colors.backgroundColor.cgColor
         setupOptions(width: bounds.width, height: bounds.height)
+        layer.backgroundColor = nativeBackgroundColor.cgColor
+        nativeBackgroundColor = UIColor.clear
     }
-
+    
+    var _nativeFg, _nativeBg: TTColor!
+    var settingFg = false, settingBg = false
+    /**
+     * This will set the native foreground color to the specified native color (UIColor or NSColor)
+     * and will have this reflected into the underlying's terminal `foregroundColor` and
+     * `backgroundColor`
+     */
+    public var nativeForegroundColor: UIColor {
+        get { _nativeFg }
+        set {
+            if settingFg { return }
+            settingFg = true
+            _nativeFg = newValue
+            terminal.foregroundColor = nativeForegroundColor.getTerminalColor ()
+            settingFg = false
+        }
+    }
+    
+    /**
+     * This will set the native foreground color to the specified native color (UIColor or NSColor)
+     * and will have this reflected into the underlying's terminal `foregroundColor` and
+     * `backgroundColor`
+     */
+    public var nativeBackgroundColor: UIColor {
+        get { _nativeBg }
+        set {
+            if settingBg { return }
+            settingBg = true
+            _nativeBg = newValue
+            terminal.backgroundColor = nativeBackgroundColor.getTerminalColor ()
+            settingBg = false
+        }
+    }
+    
     var lineAscent: CGFloat = 0
     var lineDescent: CGFloat = 0
     var lineLeading: CGFloat = 0
-    
-    open func bell(source: Terminal) {
-        // TODO: do something with the bell
-    }
     
     open func bufferActivated(source: Terminal) {
         updateScroller ()
@@ -272,14 +467,20 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     public override var canBecomeFirstResponder: Bool {
         true
     }
-
+    
     public var hasText: Bool {
         return true
     }
 
     open func insertText(_ text: String) {
-        self.send (txt: text)
-        setNeedsDisplay()
+        if terminalAccessory?.controlModifier ?? false {
+            self.send (applyControlToEventCharacters (text))
+            terminalAccessory?.controlModifier = false
+        } else {
+            self.send (txt: text)
+        }
+
+        queuePendingDisplay()
     }
 
     open func deleteBackward() {
@@ -304,6 +505,19 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             break
         }
     }
+    
+    public override func resignFirstResponder() -> Bool {
+        let code = super.resignFirstResponder()
+        
+        if code {
+            keyRepeat?.invalidate()
+            keyRepeat = nil
+            
+            terminalAccessory?.cancelTimer()
+        }
+        return code
+    }
+    var keyRepeat: Timer?
     
     public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         guard let key = presses.first?.key else { return }
@@ -409,20 +623,214 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
             
         default:
             if key.modifierFlags.contains (.alternate) {
-                send (EscapeSequences.CmdEsc)
-                send (txt: key.charactersIgnoringModifiers)
+                sentData = .text("\u{1b}\(key.charactersIgnoringModifiers)")
             } else {
                 sentData = .text (key.characters)
             }
         }
         
-        // TODO - setup timer to keep sending the key until the key is released
+        //Timer.scheduledTimer(timeInterval: <#T##TimeInterval#>, invocation: <#T##NSInvocation#>, repeats: <#T##Bool#>)
         sendData (data: sentData)
     }
     
-    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        guard let key = presses.first?.key else { return }
+    public override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        print ("Here\n")
     }
+
+    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // guard let key = presses.first?.key else { return }
+    }
+    
+    /// Confromance to UITextInput
+//    func pabort (_ msg: String)
+//    {
+//        print (msg)
+//        abort ()
+//    }
+//
+//    public func text(in range: UITextRange) -> String? {
+//        pabort ("PROTO: text(in)")
+//        return "test"
+//    }
+//
+//    public func replace(_ range: UITextRange, withText text: String) {
+//        pabort ("PROTO: replace")
+//    }
+//
+//    public var selectedTextRange: UITextRange? {
+//        get {
+//            print ("PROTO: TODO selectedTextRange")
+//            return nil
+//        }
+//        set {
+//            pabort ("PROTO: setting selectedtextrange")
+//        }
+//    }
+//
+//    public var markedTextRange: UITextRange? {
+//        get {
+//            print ("Request for marked-text-range")
+//            return nil
+//        }
+//    }
+//
+//    public var markedTextStyle: [NSAttributedString.Key : Any]? {
+//        get {
+//            pabort ("PROTO: markedTextStyle")
+//            return nil
+//        }
+//        set {
+//            pabort ("PROTO: set markedTextStyle")
+//        }
+//    }
+//
+//    public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+//        pabort ("PROTO: etMarkedText")
+//    }
+//
+//    public func unmarkText() {
+//        pabort ("PROTO: unmarktext")
+//    }
+//
+//    // The text position is relative to the start of the buffer (buffer.yBase)
+//    class TerminalTextPosition: UITextPosition {
+//        var pos: Position
+//        init (_ pos: Position)
+//        {
+//            self.pos = pos
+//        }
+//    }
+//    public var beginningOfDocument: UITextPosition {
+//        get {
+//            return TerminalTextPosition(Position (col: 0, row: 0))
+//        }
+//    }
+//
+//    public var endOfDocument: UITextPosition {
+//        get {
+//            return TerminalTextPosition(Position (col: terminal.buffer.cols, row: //terminal.buffer.lines.count))
+//        }
+//    }
+//
+//    public func textRange(from fromPosition: UITextPosition, to toPosition: //UITextPosition) -> UITextRange? {
+//        pabort ("PROTO: textRange")
+//        return nil
+//    }
+//
+//    public func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+//        pabort ("PROTO: position")
+//        return nil
+//    }
+//
+//    public func position(from position: UITextPosition, in direction: //UITextLayoutDirection, offset: Int) -> UITextPosition? {
+//        pabort ("PROTO: position2")
+//        return nil
+//    }
+//
+//    public func compare(_ position: UITextPosition, to other: UITextPosition) -> //ComparisonResult {
+//        if let a = position as? TerminalTextPosition {
+//            if let b = other as? TerminalTextPosition {
+//                switch Position.compare(a.pos, b.pos){
+//                case .before:
+//                    return .orderedAscending
+//                case .after:
+//                    return .orderedDescending
+//                case .equal:
+//                    return .orderedSame
+//                }
+//            }
+//        }
+//        return .orderedSame
+//    }
+//
+//    public func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
+//        pabort ("PROTO: offset")
+//        return 0
+//    }
+//
+//    public weak var inputDelegate: UITextInputDelegate?
+//
+//    class MyInputTokenizer: NSObject, UITextInputTokenizer {
+//        func pabort (_ msg: String)
+//        {
+//            print (msg)
+//            abort()
+//        }
+//        func rangeEnclosingPosition(_ position: UITextPosition, with granularity: //UITextGranularity, inDirection direction: UITextDirection) -> UITextRange? {
+//            pabort ("PROTO: MIT/Range")
+//
+//            return nil
+//        }
+//
+//        func isPosition(_ position: UITextPosition, atBoundary granularity: //UITextGranularity, inDirection direction: UITextDirection) -> Bool {
+//            pabort ("PROTO: MIT/offset")
+//            return false
+//        }
+//
+//        func position(from position: UITextPosition, toBoundary granularity: //UITextGranularity, inDirection direction: UITextDirection) -> UITextPosition? //{
+//            pabort ("PROTO: MIT/position1")
+//            return nil
+//        }
+//
+//        func isPosition(_ position: UITextPosition, withinTextUnit granularity: //UITextGranularity, inDirection direction: UITextDirection) -> Bool {
+//            pabort ("PROTO: MIT/position")
+//            return false
+//        }
+//
+//
+//    }
+//    public var tokenizer: UITextInputTokenizer = MyInputTokenizer()
+//
+//    public func position(within range: UITextRange, farthestIn direction: //UITextLayoutDirection) -> UITextPosition? {
+//        pabort ("PROTO: position3")
+//        return nil
+//    }
+//
+//    public func characterRange(byExtending position: UITextPosition, in direction: //UITextLayoutDirection) -> UITextRange? {
+//        pabort ("PROTO: characterRnage")
+//        return nil
+//    }
+//
+//    public func baseWritingDirection(for position: UITextPosition, in direction: //UITextStorageDirection) -> NSWritingDirection {
+//        pabort ("PROTO: baseWritingDirection")
+//        return .leftToRight
+//    }
+//
+//    public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for //range: UITextRange) {
+//        pabort ("PROTO: setBaseWritingDirection")
+//
+//    }
+//
+//    public func firstRect(for range: UITextRange) -> CGRect {
+//        pabort ("PROTO: firstRect")
+//        return CGRect.zero
+//    }
+//
+//    public func caretRect(for position: UITextPosition) -> CGRect {
+//        pabort ("PROTO: caretRect")
+//        return CGRect.zero
+//    }
+//
+//    public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+//        pabort ("PROTO: selectionRects")
+//        return []
+//    }
+//
+//    public func closestPosition(to point: CGPoint) -> UITextPosition? {
+//        pabort ("PROTO: closestPosition")
+//        return nil
+//    }
+//
+//    public func closestPosition(to point: CGPoint, within range: UITextRange) -> //UITextPosition? {
+//        pabort ("PROTO: closestPosition")
+//        return nil
+//    }
+//
+//    public func characterRange(at point: CGPoint) -> UITextRange? {
+//        pabort ("PROTO: characterRange")
+//        return nil
+//    }
+//
 }
 
 extension TerminalView: TerminalDelegate {
@@ -435,10 +843,6 @@ extension TerminalView: TerminalDelegate {
         //X
     }
     
-    open func showCursor(source: Terminal) {
-        //
-    }
-  
     open func setTerminalTitle(source: Terminal, title: String) {
         terminalDelegate?.setTerminalTitle(source: self, title: title)
     }
@@ -456,8 +860,6 @@ extension TerminalView: TerminalDelegate {
     open func windowCommand(source: Terminal, command: Terminal.WindowManipulationCommand) -> [UInt8]? {
         return nil
     }
-
-    
 }
 
 // Default implementations for TerminalViewDelegate
@@ -473,9 +875,21 @@ extension TerminalViewDelegate {
             }
         }
     }
+    
+    public func bell (source: TerminalView)
+    {
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.warning)
+    }
 }
 
 extension UIColor {
+    func getTerminalColor () -> Color {
+        var red: CGFloat = 0.0, green: CGFloat = 0.0, blue: CGFloat = 0.0, alpha: CGFloat = 1.0
+        self.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return Color(red: UInt16 (red*65535), green: UInt16(green*65535), blue: UInt16(blue*65535))
+    }
+
     func inverseColor() -> UIColor {
         var red: CGFloat = 0.0, green: CGFloat = 0.0, blue: CGFloat = 0.0, alpha: CGFloat = 1.0
         self.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
@@ -497,5 +911,26 @@ extension UIColor {
                        blue: blue,
                        alpha: 1.0)
     }
+  
+    static func make (hue: CGFloat, saturation: CGFloat, brightness: CGFloat, alpha: CGFloat) -> TTColor
+    {
+        return UIColor(hue: hue,
+                       saturation: saturation,
+                       brightness: brightness,
+                       alpha: alpha)
+    }
+    
+    static func make (color: Color) -> UIColor
+    {
+        UIColor (red: CGFloat (color.red) / 65535.0,
+                 green: CGFloat (color.green) / 65535.0,
+                 blue: CGFloat (color.blue) / 65535.0,
+                 alpha: 1.0)
+    }
+    
+    static func transparent () -> UIColor {
+        return UIColor.clear
+    }
+
 }
 #endif

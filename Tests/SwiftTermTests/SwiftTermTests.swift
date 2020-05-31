@@ -36,10 +36,11 @@ final class SwiftTermTests: XCTestCase {
         } catch {
             // Ignore
         }
+        print ("Starting \(SwiftTermTests.esctest) with \(args)")
         t.process.startProcess(executable: SwiftTermTests.esctest, args: args, environment: nil)
         
         psem.wait ()
-        
+        print ("Does the file exist? \(FileManager.default.fileExists (atPath: logfile))")
         do {
             let log = try String(contentsOf: URL(fileURLWithPath: logfile), encoding: .isoLatin1)
             if log.contains("0 tests failed ***") {
@@ -59,7 +60,7 @@ final class SwiftTermTests: XCTestCase {
             "BS", "CAT", "CHA", "CHT", "CNL", "CPL", "CR", "CUB", "CUD", "CUF", "CUP", "CUU",
             "DCH", "DCS", "DECBI", "DECDC", "DECDSR", "DECERA", "DECFRA", "DECIC", "DECSTBM", "DECSTR", "DL",
             "FF", "HPR", "HTS", "HVP", "ICH", "IL", "LF",
-            "PM", "REP", "RM", "SM", "SOS", "SU", "TBC", "VPR", "VT",
+            "PM", "REP", "ResetColor", "RM", "SD", "SM", "SOS", "SU", "TBC", "VPR", "VT",
         
             // These are partial successes, with known bugs, but let us not regress the ones that pass
                         
@@ -108,6 +109,7 @@ final class SwiftTermTests: XCTestCase {
             "DECSET_ResetReverseWraparoundDisablesIt",
             "DECSET_ReverseWraparound_BS",
             "DECSET_SaveRestoreCursor",
+            "DECSET_Allow80To132",
                 // Failing:
                 // test_DECSET_Allow80To132
                 // test_DECSET_DECAWM_CursorAtRightMargin
@@ -185,19 +187,6 @@ final class SwiftTermTests: XCTestCase {
                 // switch to 80 and that is just not the case for this terminal emultaor.
                 // test_RIS_ResetDECCOLM
 
-
-            // SD
-            // 0 passe, all fail:
-                // "test_SD_BigScrollLeftRightAndTopBottomScrollRegion"
-                // "test_SD_CanClearScreen"
-                // "test_SD_DefaultParam"
-                // "test_SD_ExplicitParam"
-                // "test_SD_LeftRightAndTopBottomScrollRegion"
-                // "test_SD_OutsideLeftRightScrollRegion"
-                // "test_SD_OutsideTopBottomScrollRegion"
-                // "test_SD_RespectsLeftRightScrollRegion"
-                // "test_SD_RespectsTopBottomScrollRegion"
-
             // s8c1t?
             
             
@@ -207,6 +196,24 @@ final class SwiftTermTests: XCTestCase {
             "VPA_StopsAtBottomEdge",
                 // Failing:
                 // test_VPA_IgnoresOriginMode
+            
+            // ChangeColor 4 pass, 9 fail
+            "ChangeColor_Hash3",
+            "ChangeColor_Hash6",
+            "ChangeColor_Hash9",
+            "ChangeColor_RGB$",
+            "ChangeColor_Multiple",
+                // Failing:
+                // ChangeColor_Hash12   - I disagree with this test, it passes 16 bit 0xf000 red and expects back 0xf0f0
+                //
+                // These are additional color spaces, RGBI looks
+                // ChangeColor_RGBI
+                // ChangeColor_CIELab
+                // ChangeColor_CIELuv
+                // ChangeColor_CIEXYZ
+                // ChangeColor_CIEuvY
+                // ChangeColor_CIExyY
+                // ChangeColor_TekHVC
         ]
         
         let expr = "test_(\(good.joined(separator: "|")))"
@@ -224,20 +231,8 @@ final class SwiftTermTests: XCTestCase {
         XCTAssertNil(runTester ("test_HPA"))
     }
 
-    //
-    // Only add tests here when the only failure is the ISO protection tests, and add the passing
-    // tests manually
-    //
-    func testIsoProtection ()
-    {
-        XCTAssertNil(runTester ("test_SM_(IRM|RM_DoesNotWrapUnlessCursorAtMargin|IRM_TruncatesAtRightMargin)"))
-        XCTAssertNil(runTester ("test_ECH_(ExplicitParam|IgnoresScrollRegion|OutsideScrollRegion)"))
-        XCTAssertNil(runTester ("test_EL_(0|1|2|Default|IgnoresScrollRegion|doesNotRespectDECProtection)"))
-    }
-    
     static var allTests = [
         ("testKnownGood", testKnownGood),
         //("testMarkerMissing", testFailuresOnHeadless),
-        ("testIsoProtection", testIsoProtection),
     ]
 }

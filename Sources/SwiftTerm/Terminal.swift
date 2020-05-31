@@ -17,8 +17,16 @@ import Foundation
  */
 public protocol TerminalDelegate {
     
+    /**
+     * Invoked to request that the cursor be shown
+     */
     func showCursor (source: Terminal)
-    
+
+    /**
+     * Invoked to request that the cursor be shown
+     */
+    func hideCursor (source: Terminal)
+
     /**
      * This method is invoked when the terminal needs to set the title for the window,
      * a UI toolkit would react by setting the terminal title in the window or any other
@@ -126,6 +134,29 @@ public protocol TerminalDelegate {
      * The default implementaiton does nothing.
      */
     func hostCurrentDirectoryUpdated (source: Terminal)
+    
+    /**
+     * This method is invoked when a color in the 0..255 palette has been redefined, if the
+     * front-end keeps a cache or uses indexed rendering, it should update the color
+     * with the new values.   If the value of idx is nil, this means all the ansi colors changed
+     */
+    func colorChanged (source: Terminal, idx: Int?)
+    
+    /**
+     * The view should try to set the foreground color to the provided color
+     */
+    func setForegroundColor (source: Terminal, color: Color)
+    
+    /**
+     * The view should try to set the background color to the provided color
+     */
+    func setBackgroundColor (source: Terminal, color: Color)
+    
+    /**
+     * This should return the current foreground and background colors to
+     * report.
+     */
+    func getColors (source: Terminal) -> (foreground: Color, background: Color)
 }
 
 /**
@@ -190,7 +221,7 @@ open class Terminal {
     var gLevel: UInt8 = 0
     var cursorBlink: Bool = false
     
-    var allow80To132 = false
+    var allow80To132 = true
     
     var parser : EscapeSequenceParser
     
@@ -241,7 +272,34 @@ open class Terminal {
     // The protocol encoding for the terminal
     private var mouseProtocol: MouseProtocolEncoding = .x10
 
+    // This is used to track if we are setting the colors, to prevent a
+    // recursive invocation (nativeForegroundColor sets the terminal
+    // color, which in turn broadcasts the request for a change)
+    var settingFgColor = false, settingBgColor = false
 
+    /// This tracks the current foreground color for the application.
+    public var foregroundColor: Color = Color.defaultForeground {
+        didSet {
+            if settingFgColor {
+                return
+            }
+            settingFgColor = true
+            tdel.setForegroundColor(source: self, color: foregroundColor)
+            settingFgColor = false
+        }
+    }
+    /// This tracks the current background color for the application.
+    public var backgroundColor: Color = Color.defaultBackground {
+        didSet {
+            if settingBgColor {
+                return
+            }
+            settingBgColor = true
+            tdel.setBackgroundColor(source: self, color: backgroundColor)
+            settingBgColor = false
+        }
+    }
+    
     ///
     /// Represents the mouse operation mode that the terminal is currently using and higher level
     /// implementations should use the functions in this enumeration to determine what events to
@@ -410,7 +468,7 @@ open class Terminal {
         cc.send8bit = false
         conformance = .vt500
         
-        allow80To132 = false
+        allow80To132 = true
         
         xtermTitleSetUtf = false
         xtermTitleQueryUtf = false
@@ -579,6 +637,8 @@ open class Terminal {
         parser.oscHandlers [2] = { data in self.setTitle(text: String (bytes: data, encoding: .utf8) ?? "")}
         //   3 - set property X in the form "prop=value"
         //   4 - Change Color Number()
+        parser.oscHandlers [4] = oscChangeOrQueryColorIndex
+        
         //   5 - Change Special Color Number
         //   6 - Enable/disable Special Color Number c
         
@@ -659,6 +719,7 @@ open class Terminal {
 
         // DCS Handler
         parser.setDcsHandler ("$q", DECRQSS (terminal: self))
+        parser.setDcsHandler ("q", SixelDcsHandler (terminal: self))
     }
     
     func cmdSet8BitControls ()
@@ -681,6 +742,10 @@ open class Terminal {
         // In the original code, it is mediocre accessibility, so likely will remove this
     }
 
+    func sixel (_ image: TTImage) {
+        // insert image into buffer somehow
+    }
+    
     //
     // Because data might not be complete, we need to put back data that we read to process on
     // a future read.  To prepare for reading, on every call to parse, the prepare method is
@@ -1077,25 +1142,30 @@ open class Terminal {
     
     func resetAllColors ()
     {
-        // Nothing to do today, as we do not allow color changing
+        Color.resetAllColors ()
+        tdel.colorChanged (source: self, idx: nil)
     }
     
     func resetColor (_ number: Int)
     {
-        // Nothing to do today as we do not allow color changing
+        if number > 255 {
+            return
+        }
+        Color.ansiColors [number] = Color.defaultAnsiColors [number]
+        tdel.colorChanged(source: self, idx: number)
     }
     
     func oscResetColor (_ data: ArraySlice<UInt8>)
     {
-        let str = String (bytes:data, encoding: .ascii) ?? ""
-        log ("Attempt to reset color definitions \(str)")
-        if let param = String (bytes: data, encoding: .ascii) {
-            let colors = param.split(separator: ";")
-            for color in colors {
-                resetColor (Int (color) ?? 0)
-            }
+        if data == [] {
+            resetAllColors()
         } else {
-            resetAllColors ()
+            if let param = String (bytes: data, encoding: .ascii) {
+                let colors = param.split(separator: ";")
+                for color in colors {
+                    resetColor (Int (color) ?? 0)
+                }
+            }
         }
     }
     
@@ -1151,18 +1221,60 @@ open class Terminal {
         }
     }
     
+    // OSC 4
+    func oscChangeOrQueryColorIndex (_ data: ArraySlice<UInt8>)
+    {
+        var parsePos = data.startIndex
+        while parsePos <= data.endIndex {
+            guard let p = data [parsePos...].firstIndex(of: UInt8 (ascii: ";")) else {
+                return
+            }
+            let color = EscapeSequenceParser.parseInt(data [parsePos..<p])
+            guard color < 256 else {
+                return
+            }
+        
+            // If the request is a query, reply with the current color definition
+            if p+1 < data.endIndex && data [p+1] == UInt8 (ascii: "?") {
+                sendResponse (cc.OSC, "4;\(color);\(Color.ansiColors [color].formatAsXcolor())", cc.ST)
+                parsePos = p+2
+                if parsePos < data.endIndex && data [parsePos] == UInt8(ascii: ";"){
+                    parsePos += 1
+                }
+                continue
+            }
+    
+            //let str = String (bytes:data, encoding: .ascii) ?? ""
+            //print ("Parsing color definition \(str)")
+
+            parsePos = p + 1
+        
+            let end = data [parsePos...].firstIndex(of: UInt8(ascii: ";")) ?? data.endIndex
+            
+            if let newColor = Color.parseColor (data [parsePos..<end]) {
+                Color.ansiColors [color] = newColor
+                tdel.colorChanged (source: self, idx: color)
+            }
+            parsePos = end+1
+        }
+        
+        //log ("Attempt to set the text Foreground color \(str)")
+    }
+    
     func oscSetTextForeground (_ data: ArraySlice<UInt8>)
     {
-        let str = String (bytes:data, encoding: .ascii) ?? ""
-        log ("Attempt to set the text Foreground color \(str)")
-        // Nothing to do now
+        if let foreground = Color.parseColor(data) {
+            foregroundColor = foreground
+            tdel.setForegroundColor(source: self, color: foreground)
+        }
     }
 
     func oscSetTextBackground (_ data: ArraySlice<UInt8>)
     {
-        let str = String (bytes:data, encoding: .ascii) ?? ""
-        log ("Attempt to set the text Background color \(str)")
-        // Nothing to do now
+        if let background = Color.parseColor(data) {
+            backgroundColor = background
+            tdel.setBackgroundColor(source: self, color: background)
+        }
     }
 
     //
@@ -1632,8 +1744,9 @@ open class Terminal {
             ch = 2
         case UInt8 (ascii: "+"):
             ch = 3
+        case UInt8 (ascii: "/"):
+            ch = 3
         default:
-            // includes '/' -> unsupported? (MIGUEL TODO)
             return;
         }
         setgCharset (ch, charset: charset)
@@ -1691,6 +1804,7 @@ open class Terminal {
         buffer.x = buffer.savedX
         buffer.y = buffer.savedY
         curAttr = buffer.savedAttr
+        charset = buffer.savedCharset
         originMode = savedOriginMode
         marginMode = savedMarginMode
         wraparound = savedWraparound
@@ -2185,6 +2299,7 @@ open class Terminal {
         buffer.savedX = buffer.x
         buffer.savedY = buffer.y
         buffer.savedAttr = curAttr
+        buffer.savedCharset = charset
         savedWraparound = wraparound
         savedOriginMode = originMode
         savedMarginMode = marginMode
@@ -2337,6 +2452,7 @@ open class Terminal {
         buffer.savedAttr = CharData.defaultAttr
         buffer.savedY = 0
         buffer.savedX = 0
+        buffer.savedCharset = CharSets.defaultCharset
         buffer.marginRight = cols-1
         buffer.marginLeft = 0
         charset = nil
@@ -2344,6 +2460,8 @@ open class Terminal {
         conformance = .vt500
         hyperLinkTracking = nil
         lineFeedMode = options.convertEol
+        resetAllColors()
+        tdel.showCursor(source: self)
         // MIGUEL TODO:
         // TODO: audit any new variables, those in setup might be useful
     }
@@ -2525,7 +2643,7 @@ open class Terminal {
         }
 
         let parCount = pars.count
-        let empty = CharacterStyle (attribute: 0)
+        //let empty = CharacterStyle (attribute: 0)
         var style = curAttr.style
         var fg = curAttr.fg
         var bg = curAttr.bg
@@ -2569,26 +2687,26 @@ open class Terminal {
                 break
             case 22:
                 // not bold nor faint
-                style = style.remove (.bold) ?? empty
-                style = style.remove (.dim) ?? empty
+                style.remove (.bold)
+                style.remove (.dim)
             case 23:
                 // not italic
-                style = style.remove (.italic) ?? empty
+                style.remove (.italic)
             case 24:
                 // not underlined
-                style = style.remove (.underline) ?? empty
+                style.remove (.underline)
             case 25:
                 // not blink
-                style = style.remove (.blink) ?? empty
+                style.remove (.blink)
             case 27:
                 // not inverse
-                style = style.remove (.inverse) ?? empty
+                style.remove (.inverse)
             case 28:
                 // not invisible
-                style = style.remove (.invisible) ?? empty
+                style.remove (.invisible)
             case 29:
                 // not crossed out
-                style = style.remove (.crossedOut) ?? empty
+                style.remove (.crossedOut)
             case 30...37:
                 // fg color 8
                 fg = Attribute.Color.ansi256(code: UInt8(p - 30))
@@ -2825,9 +2943,11 @@ open class Terminal {
                 wraparound = false
             case 12:
                 cursorBlink = false
-                break;
             case 40:
                 allow80To132 = false
+            case 41:
+                // Workaround not implemented 
+                break
             case 45:
                 reverseWraparound = false
             case 66:
@@ -2857,16 +2977,19 @@ open class Terminal {
             case 1015: // urxvt ext mode mouse
                 mouseProtocol = .x10
             case 25: // hide cursor
-                cursorHidden = true
+                hideCursor ()
             case 1048: // alt screen cursor
                 cmdRestoreCursor ([], [])
+            case 1034:
+                // Terminal.app ignores this request, and keeps sending ESC+letter
+                break
             case 1049: // alt screen buffer cursor
                 fallthrough
             case 47: // normal screen buffer
                 fallthrough
             case 1047: // normal screen buffer - clearing it first
                    // Ensure the selection manager has the correct buffer
-                buffers!.activateNormalBuffer (clearAlt: par == 1047)
+                buffers!.activateNormalBuffer (clearAlt: par == 1047 || par == 1049)
                 if (par == 1049){
                     cmdRestoreCursor ([], [])
                 }
@@ -2879,6 +3002,7 @@ open class Terminal {
                 bracketedPasteMode = false
                 break
             default:
+                log ("Unhandled ? resetMode with \(par) and \(collect)")
                 break
             }
         }
@@ -3073,9 +3197,13 @@ open class Terminal {
             case 1015: // urxvt ext mode mouse
                 mouseProtocol = .urxvt
             case 25: // show cursor
-                cursorHidden = false
+                showCursor()
             case 63:
                 // DECRLM - Cursor Right to Left Mode, not supported
+                break
+            case 1034:
+                // Terminal.app ignores this request, and keeps sending ESC+letter
+                // Given our UTF8 world, I do not think this is a worth encoding
                 break
             case 1048: // alt screen cursor
                 cmdSaveCursor ([], [])
@@ -3354,10 +3482,21 @@ open class Terminal {
     func cmdScrollDown (_ pars: [Int])
     {
         let p = min (max (pars.count == 0 ? 1 : pars [0], 1), rows)
-        
+        let da = CharData.defaultAttr
+
+        let row = buffer.scrollTop + buffer.yBase
+
+        let columnCount = buffer.marginRight-buffer.marginLeft+1
+        let rowCount = buffer.scrollBottom-buffer.scrollTop
         for _ in 0..<p {
-            buffer.lines.splice (start: buffer.yBase + buffer.scrollBottom, deleteCount: 1, items: [])
-            buffer.lines.splice (start: buffer.yBase + buffer.scrollBottom, deleteCount: 0, items: [buffer.getBlankLine (attribute: CharData.defaultAttr)])
+            for i in (0..<rowCount).reversed() {
+                let src = buffer.lines [row+i]
+                let dst = buffer.lines [row+i+1]
+                
+                dst.copyFrom(src, srcCol: buffer.marginLeft, dstCol: buffer.marginLeft, len: columnCount)
+            }
+            let last = buffer.lines [row]
+            last.fill (with: CharData (attribute: da), atCol: buffer.marginLeft, len: columnCount)
         }
         // this.maxRange();
         updateRange (buffer.scrollTop)
@@ -3537,6 +3676,8 @@ open class Terminal {
                 buffer.append(contentsOf: arr)
             } else if let str = item as? String {
                 buffer.append (contentsOf: [UInt8] (str.utf8))
+            } else if let c = item as? UInt8 {
+                buffer.append (c)
             } else {
                 log ("Do not know how to handle type \(item)")
             }
@@ -3919,8 +4060,17 @@ open class Terminal {
             return
         }
         cursorHidden = false
-        refresh (startRow: buffer.y, endRow: buffer.y)
+        //refresh (startRow: buffer.y, endRow: buffer.y)
         tdel.showCursor (source: self)
+    }
+    
+    public func hideCursor ()
+    {
+        if cursorHidden {
+            return
+        }
+        cursorHidden = true
+        tdel.hideCursor(source: self)
     }
 
     // Encode button and position to characters
@@ -4137,10 +4287,34 @@ public extension TerminalDelegate {
     func showCursor(source: Terminal) {
         // nothing
     }
-    
+
+    func hideCursor(source: Terminal) {
+        // nothing
+    }
+
     func mouseModeChanged(source: Terminal) {
     }
     
     func hostCurrentDirectoryUpdated (source: Terminal) {
     }
+    
+    func colorChanged (source: Terminal, idx: Int?) {
+        
+    }
+    
+    func getColors (source: Terminal) -> (foreground: Color, background: Color)
+    {
+        return (source.foregroundColor, source.backgroundColor)
+    }
+    
+    func setForegroundColor (source: Terminal, color: Color)
+    {
+        source.foregroundColor = color
+    }
+    
+    func setBackgroundColor (source: Terminal, color: Color)
+    {
+        source.backgroundColor = color
+    }
+
 }

@@ -124,6 +124,12 @@ class Buffer {
      * This represents the saved attributed
      */
     public var savedAttr = CharData.defaultAttr
+    
+    /**
+     * This tracks the current charset
+     */
+    public var savedCharset: [UInt8:String]? = nil
+    
     var hasScrollback : Bool
     var cols, rows: Int
     
@@ -569,7 +575,7 @@ class Buffer {
     {
         let toRemove = getLinesToRemove(oldCols: oldCols, newCols: newCols, bufferAbsoluteY: yBase + y, nullChar: CharData.Null)
         
-        print ("Lines to remove: \(toRemove) \(toRemove.count)")
+        //print ("Lines to remove: \(toRemove) \(toRemove.count)")
         if toRemove.count > 0 {
             // Create new layout
             let layout = CircularList<Int> (maxLength: lines.count)
@@ -919,5 +925,18 @@ class Buffer {
             print ("oops")
         }
         Buffer.n += 1
+    }
+
+    func dumpConsole ()
+    {
+        let debugBuffer = self
+        for y in 0..<debugBuffer._lines.maxLength {
+            let flag = y == debugBuffer.yDisp ? "D" : " "
+            let yb   = y == debugBuffer.yBase ? "B" : " "
+            let istr = String (format: "%03d", y)
+            let cstr = String (format: "%03d", debugBuffer._lines.getCyclicIndex(y))
+        
+            print ("[\(istr):\(cstr)]\(flag)\(yb) \(debugBuffer._lines.array [y].debugDescription)")
+        }
     }
 }

@@ -6,8 +6,13 @@ SwiftTerm
 SwiftTerm is a VT100/Xterm terminal emulator for Swift applications that can be embedded
 into macOS or iOS applications.
 
-This repository contains both the terminal emulator engine, as well as
-concrete implementation for iOS using UIKit, and macOS using AppKit.
+This repository contains both a terminal emulator engine that is UI agnostic, as well as
+front-ends for this engine for iOS using UIKit, and macOS using AppKit.   Additionally
+there are a couple of minimal sample apps for Mac and iOS showing how to use the library.   
+
+The companion module [SwiftTermApp](https://github.com/migueldeicaza/SwiftTermApp) builds 
+an actual iOS app that uses this library and is more complete than the testing apps in
+this module.
 
 Check the [API Documentation](https://migueldeicaza.github.io/SwiftTerm/)
 
@@ -32,7 +37,7 @@ connecting to a remote system is with SSH.
 
 The core library currently does not provide a convenient way to connect to SSH, purely
 to avoid the additional dependency.   But this git module references a module that pulls
-a precompiled SSH client ([Frugghi's SwiftSH](https://github.com/Frugghi/SwiftSH)), along with 
+a precompiled SSH client ([Frugghi's SwiftSH](https://github.com/migueldeicaza/SwiftSH)), along with 
 a [`UIKitSsshTerminalView`](https://github.com/migueldeicaza/SwiftTerm/blob/master/iOS/UIKitSshTerminalView.swift)
 in the iOS sample that that connects the `TerminalView` for iOS to an SSH connection.  
 
@@ -45,11 +50,11 @@ process, those are provided by higher levels.
 
 In the longer term, I want to also add a tvOS UIView, a [SwiftGtk](https://github.com/rhx/SwiftGtk) 
 front-end for Linux, as well as an implementation for my Swift console toolkit
-[TermKit](https://github.com/migueldeicaza/TermKit)/
+[TermKit](https://github.com/migueldeicaza/TermKit).
 
 This is a port of my original [XtermSharp](https://github.com/migueldeicaza/XtermSharp), which was
 itself based on [xterm.js](https://xtermjs.org).  At this point, I consider SwiftTerm
-to be a more advanced terminal emulator that both of those (modulo Selection/Accessibility) as
+to be a more advanced terminal emulator than both of those (modulo Selection/Accessibility) as
 it handles UTF, Unicode and grapheme clusters better than those and has a more complete coverage of 
 terminal emulation.   XtermSharp is generally attempting to keep up.
 
